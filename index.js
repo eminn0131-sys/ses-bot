@@ -23,7 +23,7 @@ for (const token of tokens) {
     ]
   });
 
-  client.once('ready', () => {
+  client.once('clientReady', () => {
     console.log(`[OK] ${client.user.tag} hazır`);
   });
 
@@ -38,41 +38,41 @@ for (const token of tokens) {
       const vc = msg.member?.voice?.channel;
       if (!vc) return msg.reply('Önce bir sesli kanala gir.');
 
-      try {
-        const existing = getVoiceConnection(vc.guild.id);
-        if (existing) existing.destroy();
-
-        const connect = () => joinVoiceChannel({
-          channelId: vc.id,
-          guildId: vc.guild.id,
-          adapterCreator: vc.guild.voiceAdapterCreator,
-          selfDeaf: false,
-          selfMute: true
-        });
-
-        const conn = connect();
-
-        conn.on(VoiceConnectionStatus.Disconnected, async () => {
-          try {
-            await Promise.race([
-              entersState(conn, VoiceConnectionStatus.Signalling, 5000),
-              entersState(conn, VoiceConnectionStatus.Connecting, 5000)
-            ]);
-          } catch {
-            conn.destroy();
-            connect();
-          }
-        });
-
-        console.log(`[JOIN] ${client.user.tag} -> ${vc.name}`);
-      } catch (e) {
-        console.error(`[HATA] ${client.user.tag}:`, e.message);
+      const existing = getVoiceConnection(vc.guild.id);
+      if (existing) {
+        if (existing.joinConfig.channelId === vc.id) return; // zaten burada
+        existing.removeAllListeners(); // eski dinleyiciyi temizle
+        existing.destroy();
       }
+
+      const conn = joinVoiceChannel({
+        channelId: vc.id,
+        guildId: vc.guild.id,
+        adapterCreator: vc.guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: true
+      });
+
+      conn.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+          await Promise.race([
+            entersState(conn, VoiceConnectionStatus.Signalling, 5000),
+            entersState(conn, VoiceConnectionStatus.Connecting, 5000)
+          ]);
+        } catch {
+          if (conn.state.status !== VoiceConnectionStatus.Destroyed) {
+            conn.destroy();
+          }
+        }
+      });
+
+      console.log(`[JOIN] ${client.user.tag} -> ${vc.name}`);
     }
 
     if (cmd === 'ses' && (args[1]?.toLowerCase() === 'çık' || args[1]?.toLowerCase() === 'cik')) {
       const conn = getVoiceConnection(msg.guild.id);
       if (conn) {
+        conn.removeAllListeners();
         conn.destroy();
         msg.reply('Çıktım.');
       }
@@ -80,7 +80,6 @@ for (const token of tokens) {
   });
 
   client.on('error', (e) => console.error(`[CLIENT ERROR] ${e.message}`));
-
   client.login(token).catch(err => console.error(`Token hatalı: ${err.message}`));
 }
 
