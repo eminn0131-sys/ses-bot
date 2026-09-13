@@ -7,13 +7,15 @@ const raw = process.env.TOKENS || '';
 const tokens = raw.split(',').map(t => t.trim()).filter(Boolean);
 
 if (tokens.length === 0) {
-  console.error('HATA: TOKENS environment variable boş.');
+  console.error('HATA: TOKENS boş.');
   process.exit(1);
 }
 
 console.log(`${tokens.length} bot başlatılıyor...`);
 
-for (const token of tokens) {
+const clients = [];
+
+tokens.forEach((token, index) => {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -22,6 +24,8 @@ for (const token of tokens) {
       GatewayIntentBits.GuildVoiceStates
     ]
   });
+
+  client.botIndex = index;
 
   client.once('clientReady', () => {
     console.log(`[OK] ${client.user.tag} hazır`);
@@ -38,49 +42,65 @@ for (const token of tokens) {
       const vc = msg.member?.voice?.channel;
       if (!vc) return msg.reply('Önce bir sesli kanala gir.');
 
-      const existing = getVoiceConnection(vc.guild.id);
-      if (existing) {
-        if (existing.joinConfig.channelId === vc.id) return; // zaten burada
-        existing.removeAllListeners(); // eski dinleyiciyi temizle
-        existing.destroy();
-      }
-
-      const conn = joinVoiceChannel({
-        channelId: vc.id,
-        guildId: vc.guild.id,
-        adapterCreator: vc.guild.voiceAdapterCreator,
-        selfDeaf: false,
-        selfMute: true
-      });
-
-      conn.on(VoiceConnectionStatus.Disconnected, async () => {
-        try {
-          await Promise.race([
-            entersState(conn, VoiceConnectionStatus.Signalling, 5000),
-            entersState(conn, VoiceConnectionStatus.Connecting, 5000)
-          ]);
-        } catch {
-          if (conn.state.status !== VoiceConnectionStatus.Destroyed) {
-            conn.destroy();
-          }
-        }
-      });
-
-      console.log(`[JOIN] ${client.user.tag} -> ${vc.name}`);
+      // Her bot kendi sırasına göre beklesin (rate-limit önlemi)
+      const delay = client.botIndex * 2000;
+      setTimeout(() => {
+        joinNow(client, vc);
+      }, delay);
     }
 
     if (cmd === 'ses' && (args[1]?.toLowerCase() === 'çık' || args[1]?.toLowerCase() === 'cik')) {
       const conn = getVoiceConnection(msg.guild.id);
       if (conn) {
-        conn.removeAllListeners();
-        conn.destroy();
-        msg.reply('Çıktım.');
+        try { conn.removeAllListeners(); conn.destroy(); } catch {}
       }
     }
   });
 
   client.on('error', (e) => console.error(`[CLIENT ERROR] ${e.message}`));
-  client.login(token).catch(err => console.error(`Token hatalı: ${err.message}`));
+
+  // Botları da sırayla başlat
+  setTimeout(() => {
+    client.login(token).catch(err => console.error(`Token hatalı: ${err.message}`));
+  }, index * 1000);
+
+  clients.push(client);
+});
+
+function joinNow(client, vc) {
+  const existing = getVoiceConnection(vc.guild.id);
+  if (existing) {
+    if (existing.joinConfig.channelId === vc.id) return;
+    try { existing.removeAllListeners(); existing.destroy(); } catch {}
+  }
+
+  try {
+    const conn = joinVoiceChannel({
+      channelId: vc.id,
+      guildId: vc.guild.id,
+      adapterCreator: vc.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: true,
+      group: client.user.id  // her bota ayrı bağlantı grubu
+    });
+
+    conn.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(conn, VoiceConnectionStatus.Signalling, 5000),
+          entersState(conn, VoiceConnectionStatus.Connecting, 5000)
+        ]);
+      } catch {
+        if (conn.state.status !== VoiceConnectionStatus.Destroyed) {
+          conn.destroy();
+        }
+      }
+    });
+
+    console.log(`[JOIN] ${client.user.tag} -> ${vc.name}`);
+  } catch (e) {
+    console.error(`[JOIN HATA] ${client.user.tag}:`, e.message);
+  }
 }
 
 process.on('unhandledRejection', (e) => console.error('Unhandled:', e));
